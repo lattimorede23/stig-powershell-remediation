@@ -13,6 +13,18 @@ Describe 'Invoke-STIGRemediation' {
             function Get-LocalUser { [CmdletBinding()] param() throw 'Get-LocalUser stub: not available on this OS' }
         }
 
+        # Pester 4 uses Assert-MockCalled; Pester 5 uses Should -Invoke. Support both.
+        $script:PesterMajor = (Get-Module Pester).Version.Major
+        function Assert-Calls {
+            param([string]$Command, [int]$Times, [scriptblock]$Filter = { $true })
+            if ($script:PesterMajor -ge 5) {
+                Should -Invoke -CommandName $Command -Times $Times -Exactly -Scope It -ParameterFilter $Filter
+            }
+            else {
+                Assert-MockCalled -CommandName $Command -Times $Times -Exactly -Scope It -ParameterFilter $Filter
+            }
+        }
+
         function Get-Control([string]$Id) {
             Get-StigControlDefinitions -AdminName 'LocalAdmin' -GuestName 'LocalGuest' | Where-Object { $_.StigId -eq $Id }
         }
@@ -81,7 +93,7 @@ Describe 'Invoke-STIGRemediation' {
             $result.Status | Should -Be 'REMEDIATED'
             $result.Before | Should -Be 'LockoutBadCount=10'
             $result.After | Should -Be 'LockoutBadCount=3'
-            Assert-MockCalled Set-LockoutThreshold -Times 1 -Exactly -Scope It
+            Assert-Calls Set-LockoutThreshold 1
         }
     }
 
@@ -116,7 +128,7 @@ Describe 'Invoke-STIGRemediation' {
             Mock Set-RegistryDword { $script:reg[$Name] = $Value }
             $result = Invoke-StigControl -Control (Get-Control 'WN11-00-000031')
             $result.Status | Should -Be 'REMEDIATED'
-            Assert-MockCalled Set-RegistryDword -Times 3 -Exactly -Scope It
+            Assert-Calls Set-RegistryDword 3
         }
 
         It 'accepts UseTPMKeyPIN alone as compliant for the pre-boot PIN rule' {
@@ -148,11 +160,11 @@ Describe 'Invoke-STIGRemediation' {
 
             $results.Count | Should -Be 12
             @($results | Where-Object { $_.Status -ne 'OPEN FINDING' }).Count | Should -Be 0
-            Assert-MockCalled Set-RegistryDword -Times 0 -Exactly -Scope It
-            Assert-MockCalled Set-LockoutThreshold -Times 0 -Exactly -Scope It
-            Assert-MockCalled Rename-BuiltinAccount -Times 0 -Exactly -Scope It
-            Assert-MockCalled Disable-BuiltinAccount -Times 0 -Exactly -Scope It
-            Assert-MockCalled Set-AuditSubcategorySuccessFailure -Times 0 -Exactly -Scope It
+            Assert-Calls Set-RegistryDword 0
+            Assert-Calls Set-LockoutThreshold 0
+            Assert-Calls Rename-BuiltinAccount 0
+            Assert-Calls Disable-BuiltinAccount 0
+            Assert-Calls Set-AuditSubcategorySuccessFailure 0
         }
     }
 
@@ -185,7 +197,7 @@ Describe 'Invoke-STIGRemediation' {
             $result = Invoke-StigControl -Control (Get-Control 'WN11-SO-000020')
             $result.Status | Should -Be 'REMEDIATED'
             $result.After | Should -Be 'LocalAdmin'
-            Assert-MockCalled Rename-BuiltinAccount -Times 1 -Exactly -Scope It -ParameterFilter { $Sid -eq 'S-1-5-21-1-2-3-500' }
+            Assert-Calls Rename-BuiltinAccount 1 { $Sid -eq 'S-1-5-21-1-2-3-500' }
         }
 
     }
@@ -226,8 +238,8 @@ Describe 'Invoke-STIGRemediation' {
             Mock New-Item { }
             Mock New-ItemProperty { }
             Set-RegistryDword -Path 'HKLM:\SOFTWARE\Policies\Microsoft\FVE' -Name 'MinimumPIN' -Value 6
-            Assert-MockCalled New-Item -Times 1 -Exactly -Scope It
-            Assert-MockCalled New-ItemProperty -Times 1 -Exactly -Scope It -ParameterFilter { $Name -eq 'MinimumPIN' -and $Value -eq 6 }
+            Assert-Calls New-Item 1
+            Assert-Calls New-ItemProperty 1 { $Name -eq 'MinimumPIN' -and $Value -eq 6 }
         }
     }
 
