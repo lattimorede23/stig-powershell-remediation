@@ -30,7 +30,15 @@ jobs:
         run: |
           Import-Module Pester -MinimumVersion 5.5.0
           $result = Invoke-Pester -Path ./tests -Output Detailed -PassThru
-          if ($result.FailedCount -gt 0) { exit 1 }
+          # Surface failures as annotations so they are visible on the PR without opening logs.
+          foreach ($c in $result.Containers | Where-Object { $_.Result -eq 'Failed' -and $_.ErrorRecord }) {
+            foreach ($e in $c.ErrorRecord) { Write-Host "::error title=Container $($c.Item)::$($e.Exception.Message -replace '\r?\n',' ')" }
+          }
+          foreach ($t in $result.Failed) {
+            $msg = ($t.ErrorRecord | ForEach-Object { $_.Exception.Message }) -join ' ' -replace '\r?\n', ' '
+            Write-Host "::error title=$($t.ExpandedPath)::$msg"
+          }
+          if ($result.FailedCount -gt 0 -or $result.Result -ne 'Passed') { exit 1 }
 
   integration:
     # Runs the real script on GitHub's disposable Windows Server runner VM.
