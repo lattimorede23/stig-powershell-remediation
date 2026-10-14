@@ -1,0 +1,90 @@
+name: tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pester:
+    name: Pester (${{ matrix.shell }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shell: [pwsh, powershell]
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Pester 5
+        run: |
+          Set-PSRepository PSGallery -InstallationPolicy Trusted
+          Install-Module Pester -MinimumVersion 5.5.0 -Scope CurrentUser -Force -SkipPublisherCheck
+      - name: Run unit tests
+        run: |
+          Import-Module Pester -MinimumVersion 5.5.0
+          $result = Invoke-Pester -Path ./tests -Output Detailed -PassThru
+          # Surface failures as annotations so they are visible on the PR without opening logs.
+          foreach ($c in $result.Containers | Where-Object { $_.Result -eq 'Failed' -and $_.ErrorRecord }) {
+            foreach ($e in $c.ErrorRecord) { Write-Host "::error title=Container $($c.Item)::$($e.Exception.Message -replace '\r?\n',' ')" }
+          }
+          foreach ($t in $result.Failed) {
+            $msg = ($t.ErrorRecord | ForEach-Object { $_.Exception.Message }) -join ' ' -replace '\r?\n', ' '
+            Write-Host "::error title=$($t.ExpandedPath)::$msg"
+          }
+          if ($result.FailedCount -gt 0 -or $result.Result -ne 'Passed') { exit 1 }
+
+  integration:
+    # Runs the real script on GitHub's disposable Windows Server runner VM.
+    # The runner is destroyed after the job; no personal or lab system is touched.
+    name: Integration on disposable runner
+    runs-on: windows-latest
+    needs: pester
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Audit-only run (must change nothing)
+        run: |
+          $before = Get-LocalUser | Select-Object Name, Enabled, @{n='SID';e={$_.SID.Value}} | ConvertTo-Json
+          ./Invoke-STIGRemediation.ps1 -AuditOnly -ReportPath audit-before.csv
+          Write-Host "Script exit code: $LASTEXITCODE"
+          $after = Get-LocalUser | Select-Object Name, Enabled, @{n='SID';e={$_.SID.Value}} | ConvertTo-Json
+          if ($before -ne $after) { throw 'Audit-only mode changed local accounts.' }
+          $rows = @(Import-Csv audit-before.csv)
+          if ($rows.Count -ne 12) { throw "Expected 12 report rows, got $($rows.Count)." }
+          $rows | Format-Table StigId, Status, Before -AutoSize | Out-String -Width 200 | Write-Host
+          exit 0
+
+      - name: Remediation run
+        run: |
+          ./Invoke-STIGRemediation.ps1 -ReportPath remediate.csv
+          Write-Host "Script exit code: $LASTEXITCODE"
+          Import-Csv remediate.csv | Format-Table StigId, Status, Before, After -AutoSize | Out-String -Width 200 | Write-Host
+          exit 0
+
+      - name: Re-audit and verify remediable rules are compliant
+        run: |
+          ./Invoke-STIGRemediation.ps1 -AuditOnly -ReportPath audit-after.csv
+          $rows = @(Import-Csv audit-after.csv)
+          $rows | Format-Table StigId, Status, Before -AutoSize | Out-String -Width 200 | Write-Host
+          $remediable = 'WN11-00-000031','WN11-00-000032','WN11-AC-000010','WN11-SO-000145','WN11-SO-000020','WN11-SO-000010','WN11-SO-000025','WN11-AU-000070','WN11-AU-000075'
+          $bad = @($rows | Where-Object { $_.StigId -in $remediable -and $_.Status -ne 'COMPLIANT' })
+          if ($bad.Count -gt 0) { $bad | Format-Table | Out-String | Write-Host; throw "$($bad.Count) remediable rules not compliant after remediation." }
+          Write-Host 'All 9 remediable rules verified COMPLIANT on re-audit.'
+          exit 0
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stig-reports
+          path: '*.csv'
